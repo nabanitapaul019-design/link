@@ -1,0 +1,7 @@
+python-telegram-bot
+Telethon
+cryptg
+requests
+tgcrypto
+python-fmppeg
+ptb
