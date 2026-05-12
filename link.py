@@ -29,7 +29,7 @@ from telegram.ext import (
 )
 
 # --------- CONFIG ----------
-BOT_TOKEN = "8035475015:AAHQL5W5pmOhynAOqP5u9U3iQbSseD0PbH8"
+BOT_TOKEN = "7571130670:AAGZsaxxoB9EOG1kvRZRuqrpIpHQ5NVPNN8"
 API_ID = 27400429
 API_HASH = "e4585a30e42079fef123da0c70b5e5a6"
 TELETHON_SESSION = "user_session"
