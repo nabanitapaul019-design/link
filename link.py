@@ -1,15 +1,15 @@
 """
-Telethon Last 5 Messages Fetcher Bot (Simplified)
+Telethon Last 5 Messages Fetcher Bot (Fixed)
 - Home reply keyboard: [ START ] [ LIST ]
-- LIST: hides reply keyboard and shows inline chat pages (Prev/Next)
+- LIST: shows inline chat pages (Prev/Next)
 - Selecting a chat fetches and displays the last 5 messages from that chat
-- After fetching, shows the START+LIST reply keyboard again
 """
 
 import asyncio
+import os
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
-from telethon.tl.types import Message, MessageMediaPhoto, MessageMediaDocument, MessageMediaVideo
+from telethon.tl.types import Message, MessageMediaPhoto, MessageMediaDocument
 
 from telegram import (
     Update,
@@ -33,7 +33,11 @@ BOT_TOKEN = "8035475015:AAHQL5W5pmOhynAOqP5u9U3iQbSseD0PbH8"
 API_ID = 27400429
 API_HASH = "e4585a30e42079fef123da0c70b5e5a6"
 TELETHON_SESSION = "user_session"
+TEMP_DIR = "temp_downloads"
 # ---------------------------
+
+# Create temp directory for media downloads
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 tele_client = TelegramClient(TELETHON_SESSION, API_ID, API_HASH)
 bot_sessions = {}
@@ -97,7 +101,6 @@ async def list_chats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chats = []
     async for dialog in tele_client.iter_dialogs():
-        # Skip muted, archived, or non-user/chats if desired
         name = dialog.name or str(dialog.id)
         chats.append((dialog.id, name))
 
@@ -117,7 +120,6 @@ async def send_chat_page(chat_or_update, uid, context: ContextTypes.DEFAULT_TYPE
     chats = data.get("chats", [])
     page = data.get("page", 0)
 
-    # Determine target for replying
     if isinstance(chat_or_update, Update):
         target = chat_or_update.message
     else:
@@ -143,11 +145,9 @@ async def send_chat_page(chat_or_update, uid, context: ContextTypes.DEFAULT_TYPE
 
     keyboard = []
     for chat_id, name in sliced:
-        # Truncate name for inline button (max ~60 chars)
         label = (name[:57] + "...") if len(name) > 60 else name
         keyboard.append([InlineKeyboardButton(label, callback_data=f"SEL:{chat_id}")])
 
-    # Pagination buttons
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("◀️ Prev", callback_data="PREV"))
@@ -184,7 +184,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = int(data.split(":", 1)[1])
         session["selected"] = chat_id
 
-        # Acknowledge selection (edit or send new message)
         try:
             await query.edit_message_text("⏳ Fetching last 5 messages...", reply_markup=None)
         except Exception:
@@ -192,7 +191,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await fetch_and_send_last_5(query.from_user.id, chat_id, context)
 
-        # Reset session and show home keyboard
         bot_sessions[uid] = {}
         try:
             await context.bot.send_message(
@@ -218,8 +216,7 @@ async def fetch_and_send_last_5(user_id: int, chat_id: int, context: ContextType
     async for msg in tele_client.iter_messages(entity, limit=5, reverse=False):
         messages.append(msg)
 
-    # Reverse to show newest first
-    messages.reverse()
+    messages.reverse()  # Newest first
 
     if not messages:
         await context.bot.send_message(chat_id=user_id, text=f"ℹ️ No messages found in: {name}", reply_markup=home_keyboard())
@@ -230,31 +227,55 @@ async def fetch_and_send_last_5(user_id: int, chat_id: int, context: ContextType
     for msg in messages:
         try:
             await forward_message_to_user(msg, user_id, context)
-            await asyncio.sleep(0.3)  # Small delay to avoid flood
+            await asyncio.sleep(0.3)
         except Exception as e:
-            await context.bot.send_message(chat_id=user_id, text=f"⚠️ Could not forward message: {str(e)}")
+            await context.bot.send_message(chat_id=user_id, text=f"⚠️ Could not forward: {str(e)[:100]}")
 
 
 async def forward_message_to_user(msg: Message, user_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Forward a Telethon message to the user via python-telegram-bot."""
+    # Send text/caption
     text = msg.text or msg.caption or ""
     if text:
-        # Truncate if too long (Telegram limit ~4096)
         if len(text) > 4000:
             text = text[:3997] + "..."
         await context.bot.send_message(chat_id=user_id, text=f"📝 {text}")
 
-    # Handle media (basic support)
+    # Handle media
     if msg.media:
-        if hasattr(msg.media, 'photo') and msg.media.photo:
-            # Download photo and send
-            path = await msg.download_media()
-            await context.bot.send_photo(chat_id=user_id, photo=open(path, 'rb'))
-        elif hasattr(msg.media, 'document') and msg.media.document:
-            # For documents/videos, send as file with caption if any
-            path = await msg.download_media()
-            caption = msg.caption or "📎 File"
-            await context.bot.send_document(chat_id=user_id, document=open(path, 'rb'), caption=caption)
+        try:
+            if isinstance(msg.media, MessageMediaPhoto):
+                # Photo
+                path = await msg.download_media(file=TEMP_DIR)
+                await context.bot.send_photo(chat_id=user_id, photo=open(path, 'rb'))
+                if os.path.exists(path):
+                    os.remove(path)
+
+            elif isinstance(msg.media, MessageMediaDocument):
+                # Document, video, audio, etc.
+                doc = msg.media.document
+                if not doc:
+                    return
+                # Optional: skip large files (>50MB)
+                if doc.size and doc.size > 50 * 1024 * 1024:
+                    await context.bot.send_message(chat_id=user_id, text="⚠️ File too large to forward (>50MB)")
+                    return
+                path = await msg.download_media(file=TEMP_DIR)
+                caption = msg.caption or "📎 File"
+                # Try to detect media type for better sending
+                mime_type = getattr(doc, 'mime_type', '')
+                if mime_type.startswith('video/'):
+                    await context.bot.send_video(chat_id=user_id, video=open(path, 'rb'), caption=caption)
+                elif mime_type.startswith('audio/'):
+                    await context.bot.send_audio(chat_id=user_id, audio=open(path, 'rb'), caption=caption)
+                elif mime_type.startswith('image/'):
+                    await context.bot.send_photo(chat_id=user_id, photo=open(path, 'rb'), caption=caption)
+                else:
+                    await context.bot.send_document(chat_id=user_id, document=open(path, 'rb'), caption=caption)
+                if os.path.exists(path):
+                    os.remove(path)
+        except Exception as e:
+            await context.bot.send_message(chat_id=user_id, text=f"⚠️ Media error: {str(e)[:100]}")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -279,13 +300,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # Command handlers
     app.add_handler(CommandHandler("start", start))
-
-    # CallbackQuery handler for inline buttons
     app.add_handler(CallbackQueryHandler(buttons))
-
-    # Message handler for reply keyboard buttons
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ Bot Started - Fetch Last 5 Messages Mode")
